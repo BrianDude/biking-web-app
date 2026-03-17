@@ -1,43 +1,115 @@
 import { useState, useEffect, useRef } from 'react'
 
-// ─── Stage definitions ───────────────────────────────────────────────────────
+// ─── Types ────────────────────────────────────────────────────────────────────
 
-const STAGES = [
-  { name: 'Warm Up',        duration: 600,  bpmLow: 117, bpmHigh: 136, color: '#4ade80', darkColor: '#16a34a', emoji: '🟢' },
-  { name: 'Steady Burn',    duration: 900,  bpmLow: 136, bpmHigh: 156, color: '#facc15', darkColor: '#ca8a04', emoji: '🟡' },
-  { name: 'HIIT Intervals', duration: 1200, bpmLow: 146, bpmHigh: 176, color: '#f97316', darkColor: '#c2410c', emoji: '🟠' },
-  { name: 'Cooldown Burn',  duration: 600,  bpmLow: 136, bpmHigh: 156, color: '#facc15', darkColor: '#ca8a04', emoji: '🟡' },
-  { name: 'Cool Down',      duration: 300,  bpmLow: 97,  bpmHigh: 117, color: '#818cf8', darkColor: '#4338ca', emoji: '🔵' },
-]
+type Stage = {
+  name: string
+  duration: number
+  bpmLow: number
+  bpmHigh: number
+  color: string
+  darkColor: string
+  emoji: string
+}
 
-const TOTAL_DURATION = STAGES.reduce((sum, s) => sum + s.duration, 0) // 3600s
+type Plan = {
+  id: string
+  label: string
+  subtitle: string
+  totalMinutes: number
+  cardEmoji: string
+  stages: Stage[]
+  sprintStarts: number[]    // absolute seconds from workout start
+  sprintDuration: number
+  sprintTotal: number
+  hrCheckTimes: number[]    // absolute seconds from workout start
+}
 
-// Cumulative start time (seconds) for each stage
-const STAGE_STARTS = STAGES.reduce<number[]>((acc, _stage, i) => {
-  acc.push(i === 0 ? 0 : acc[i - 1] + STAGES[i - 1].duration)
-  return acc
-}, [])
+// ─── Plan definitions ─────────────────────────────────────────────────────────
 
-// ─── Event triggers (absolute seconds from workout start) ────────────────────
+// 30 Min — Weekday Fast
+// Stages: Warm Up 5 min | HIIT 20 min | Cool Down 5 min
+// HIIT starts at 300s. Sprint pattern: 3 min steady → 1 min sprint × 5 (every 4 min)
+//   Sprint starts (absolute): 480, 720, 960, 1200, 1440
+//   Verification: 5 cycles × 4 min = 20 min ✓ — last sprint ends at 1500s = end of HIIT ✓
+const PLAN_30: Plan = {
+  id: '30',
+  label: '30 Min',
+  subtitle: 'Weekday Fast',
+  totalMinutes: 30,
+  cardEmoji: '⚡',
+  stages: [
+    { name: 'Warm Up',        duration: 300,  bpmLow: 117, bpmHigh: 136, color: '#4ade80', darkColor: '#16a34a', emoji: '🟢' },
+    { name: 'HIIT Intervals', duration: 1200, bpmLow: 146, bpmHigh: 176, color: '#f97316', darkColor: '#c2410c', emoji: '🟠' },
+    { name: 'Cool Down',      duration: 300,  bpmLow: 97,  bpmHigh: 117, color: '#818cf8', darkColor: '#4338ca', emoji: '🔵' },
+  ],
+  sprintStarts: [480, 720, 960, 1200, 1440],
+  sprintDuration: 60,
+  sprintTotal: 5,
+  // Warm Up 3 min mark | HIIT every 3 min | Cool Down 3 min mark
+  hrCheckTimes: [180, 480, 660, 840, 1020, 1200, 1380, 1680],
+}
 
-// HIIT sprint cues: absolute minutes 28, 32, 36, 40, 44
-// HIIT stage starts at 25 min (1500s); sprints at min 3/7/11/15/19 into stage
-const SPRINT_STARTS = [1680, 1920, 2160, 2400, 2640]
-const SPRINT_DURATION = 60
+// 40 Min — Weekday Steady
+// Stages: Warm Up 5 min | Steady 10 min | HIIT 16 min | Steady Cooldown 4 min | Cool Down 5 min
+// HIIT starts at 900s. Sprint pattern: 3 min steady → 1 min sprint × 4 (every 4 min)
+//   Sprint starts (absolute): 1080, 1320, 1560, 1800
+//   Verification: 4 cycles × 4 min = 16 min ✓ — last sprint ends at 1860s = end of HIIT ✓
+const PLAN_40: Plan = {
+  id: '40',
+  label: '40 Min',
+  subtitle: 'Weekday Steady',
+  totalMinutes: 40,
+  cardEmoji: '🔥',
+  stages: [
+    { name: 'Warm Up',         duration: 300,  bpmLow: 117, bpmHigh: 136, color: '#4ade80', darkColor: '#16a34a', emoji: '🟢' },
+    { name: 'Steady Burn',     duration: 600,  bpmLow: 136, bpmHigh: 156, color: '#facc15', darkColor: '#ca8a04', emoji: '🟡' },
+    { name: 'HIIT Intervals',  duration: 960,  bpmLow: 146, bpmHigh: 176, color: '#f97316', darkColor: '#c2410c', emoji: '🟠' },
+    { name: 'Steady Cooldown', duration: 240,  bpmLow: 136, bpmHigh: 156, color: '#facc15', darkColor: '#ca8a04', emoji: '🟡' },
+    { name: 'Cool Down',       duration: 300,  bpmLow: 97,  bpmHigh: 117, color: '#818cf8', darkColor: '#4338ca', emoji: '🔵' },
+  ],
+  sprintStarts: [1080, 1320, 1560, 1800],
+  sprintDuration: 60,
+  sprintTotal: 4,
+  // Warm Up 3 min | Steady 5 min in | HIIT every 3 min | Steady Cooldown 2 min in | Cool Down 3 min in
+  hrCheckTimes: [180, 600, 1080, 1260, 1440, 1620, 1800, 1980, 2280],
+}
 
-// Heart-rate check reminders (absolute seconds)
-// Warm Up (every 5 min):       5 min  = 300s
-// Steady Burn (every 5 min):   15, 20 min = 900, 1200s
-// HIIT (every 3 min):          28, 31, 34, 37, 40, 43 min
-// Cooldown Burn (every 5 min): 50 min = 3000s
-// Cool Down:                   58 min = 3480s
-const HR_CHECK_TIMES = [300, 900, 1200, 1680, 1860, 2040, 2220, 2400, 2580, 3000, 3480]
+// 60 Min — Weekend Full Burn (original plan — unchanged)
+// HIIT starts at 1500s. Sprint pattern: minutes 28, 32, 36, 40, 44
+const PLAN_60: Plan = {
+  id: '60',
+  label: '60 Min',
+  subtitle: 'Weekend Full Burn',
+  totalMinutes: 60,
+  cardEmoji: '💪',
+  stages: [
+    { name: 'Warm Up',        duration: 600,  bpmLow: 117, bpmHigh: 136, color: '#4ade80', darkColor: '#16a34a', emoji: '🟢' },
+    { name: 'Steady Burn',    duration: 900,  bpmLow: 136, bpmHigh: 156, color: '#facc15', darkColor: '#ca8a04', emoji: '🟡' },
+    { name: 'HIIT Intervals', duration: 1200, bpmLow: 146, bpmHigh: 176, color: '#f97316', darkColor: '#c2410c', emoji: '🟠' },
+    { name: 'Cooldown Burn',  duration: 600,  bpmLow: 136, bpmHigh: 156, color: '#facc15', darkColor: '#ca8a04', emoji: '🟡' },
+    { name: 'Cool Down',      duration: 300,  bpmLow: 97,  bpmHigh: 117, color: '#818cf8', darkColor: '#4338ca', emoji: '🔵' },
+  ],
+  sprintStarts: [1680, 1920, 2160, 2400, 2640],
+  sprintDuration: 60,
+  sprintTotal: 5,
+  hrCheckTimes: [300, 900, 1200, 1680, 1860, 2040, 2220, 2400, 2580, 3000, 3480],
+}
 
-// ─── Helpers ─────────────────────────────────────────────────────────────────
+const ALL_PLANS: Plan[] = [PLAN_30, PLAN_40, PLAN_60]
 
-function getStageIndex(elapsed: number): number {
-  for (let i = STAGE_STARTS.length - 1; i >= 0; i--) {
-    if (elapsed >= STAGE_STARTS[i]) return i
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function computeStageStarts(stages: Stage[]): number[] {
+  return stages.reduce<number[]>((acc, _s, i) => {
+    acc.push(i === 0 ? 0 : acc[i - 1] + stages[i - 1].duration)
+    return acc
+  }, [])
+}
+
+function getStageIndex(elapsed: number, stageStarts: number[]): number {
+  for (let i = stageStarts.length - 1; i >= 0; i--) {
+    if (elapsed >= stageStarts[i]) return i
   }
   return 0
 }
@@ -49,9 +121,115 @@ function formatTime(totalSeconds: number): string {
   return `${m}:${sec.toString().padStart(2, '0')}`
 }
 
-// ─── Component ───────────────────────────────────────────────────────────────
+// ─── PlanSelector ─────────────────────────────────────────────────────────────
 
-export default function App() {
+function PlanSelector({ onSelect }: { onSelect: (plan: Plan) => void }) {
+  return (
+    <div
+      className="flex flex-col items-center justify-center px-4 py-8 gap-4"
+      style={{
+        minHeight: '100svh',
+        background: 'linear-gradient(160deg, #0f172a 0%, #1e1b4b 55%, #0f172a 100%)',
+      }}
+    >
+      {/* Header */}
+      <div className="text-center mb-2">
+        <div className="text-5xl mb-3">🚴</div>
+        <h1
+          className="font-black text-white tracking-tight leading-none"
+          style={{ fontSize: 'clamp(2rem, 10vw, 3rem)', textShadow: '0 2px 16px rgba(99,102,241,0.5)' }}
+        >
+          Fat Burn Ride
+        </h1>
+        <p className="text-white/50 mt-2 text-base font-medium">Choose your workout</p>
+      </div>
+
+      {/* Plan cards */}
+      <div className="w-full max-w-sm flex flex-col gap-3">
+        {ALL_PLANS.map(plan => {
+          const totalDuration = plan.stages.reduce((s, st) => s + st.duration, 0)
+          return (
+            <button
+              key={plan.id}
+              onClick={() => onSelect(plan)}
+              className="w-full rounded-3xl p-5 text-left border-2 active:scale-95 transition-transform duration-150 cursor-pointer"
+              style={{
+                background: 'rgba(255,255,255,0.06)',
+                borderColor: 'rgba(255,255,255,0.14)',
+                backdropFilter: 'blur(8px)',
+              }}
+            >
+              {/* Card header */}
+              <div className="flex items-center justify-between mb-3">
+                <div>
+                  <p
+                    className="font-black text-white leading-none"
+                    style={{ fontSize: 'clamp(1.4rem, 6vw, 1.8rem)' }}
+                  >
+                    {plan.label}
+                  </p>
+                  <p className="text-white/60 text-sm font-semibold mt-0.5">{plan.subtitle}</p>
+                </div>
+                <span
+                  className="text-4xl"
+                  style={{ filter: 'drop-shadow(0 2px 6px rgba(0,0,0,0.4))' }}
+                >
+                  {plan.cardEmoji}
+                </span>
+              </div>
+
+              {/* Stage color bar */}
+              <div className="flex gap-1 rounded-full overflow-hidden" style={{ height: '8px' }}>
+                {plan.stages.map((s, i) => (
+                  <div
+                    key={i}
+                    title={s.name}
+                    style={{ flex: s.duration, backgroundColor: s.color }}
+                  />
+                ))}
+              </div>
+
+              {/* Stage labels */}
+              <div className="flex gap-1 mt-1.5">
+                {plan.stages.map((s, i) => (
+                  <p
+                    key={i}
+                    className="text-white/40 text-center font-mono leading-tight"
+                    style={{ flex: s.duration, fontSize: '0.58rem' }}
+                  >
+                    {Math.floor(s.duration / 60)}m
+                  </p>
+                ))}
+              </div>
+
+              {/* Plan stats */}
+              <div className="flex gap-3 mt-3">
+                <span
+                  className="px-2 py-0.5 rounded-full text-white/70 font-semibold"
+                  style={{ background: 'rgba(255,255,255,0.10)', fontSize: '0.7rem' }}
+                >
+                  {formatTime(totalDuration)}
+                </span>
+                {plan.sprintTotal > 0 && (
+                  <span
+                    className="px-2 py-0.5 rounded-full font-semibold"
+                    style={{ background: 'rgba(249,115,22,0.25)', color: '#fdba74', fontSize: '0.7rem' }}
+                  >
+                    ⚡ {plan.sprintTotal} sprints
+                  </span>
+                )}
+              </div>
+            </button>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+// ─── WorkoutScreen ────────────────────────────────────────────────────────────
+
+function WorkoutScreen({ plan, onReset }: { plan: Plan; onReset: () => void }) {
   const [elapsed, setElapsed]     = useState(0)
   const [isRunning, setIsRunning] = useState(false)
   const [flashOn, setFlashOn]     = useState(false)
@@ -63,11 +241,19 @@ export default function App() {
   const hrDismissRef     = useRef<ReturnType<typeof setTimeout>  | null>(null)
   const sprintDismissRef = useRef<ReturnType<typeof setTimeout>  | null>(null)
 
-  // ── Derived state ──────────────────────────────────────────────────────────
+  // Unpack active plan data into local constants so the logic below is unchanged
+  const STAGES         = plan.stages
+  const TOTAL_DURATION = STAGES.reduce((sum, s) => sum + s.duration, 0)
+  const STAGE_STARTS   = computeStageStarts(STAGES)
+  const SPRINT_STARTS  = plan.sprintStarts
+  const SPRINT_DURATION = plan.sprintDuration
+  const HR_CHECK_TIMES = plan.hrCheckTimes
+
+  // ── Derived state ────────────────────────────────────────────────────────
 
   const isComplete     = elapsed >= TOTAL_DURATION
   const clampedElapsed = Math.min(elapsed, TOTAL_DURATION - 1)
-  const stageIndex     = getStageIndex(clampedElapsed)
+  const stageIndex     = getStageIndex(clampedElapsed, STAGE_STARTS)
   const stage          = STAGES[stageIndex]
   const stageStart     = STAGE_STARTS[stageIndex]
   const timeInStage    = clampedElapsed - stageStart
@@ -80,7 +266,7 @@ export default function App() {
 
   const bgColor = isWarning && flashOn ? stage.darkColor : stage.color
 
-  // ── Main timer tick ────────────────────────────────────────────────────────
+  // ── Main timer tick ──────────────────────────────────────────────────────
 
   useEffect(() => {
     if (isRunning && !isComplete) {
@@ -89,7 +275,7 @@ export default function App() {
     return () => { if (timerRef.current) clearInterval(timerRef.current) }
   }, [isRunning, isComplete])
 
-  // ── Warning flash (1 Hz) ───────────────────────────────────────────────────
+  // ── Warning flash (1 Hz) ─────────────────────────────────────────────────
 
   useEffect(() => {
     if (isWarning) {
@@ -101,7 +287,7 @@ export default function App() {
     return () => { if (flashRef.current) clearInterval(flashRef.current) }
   }, [isWarning])
 
-  // ── HR check and sprint cue triggers ──────────────────────────────────────
+  // ── HR check and sprint cue triggers ────────────────────────────────────
 
   useEffect(() => {
     if (!isRunning) return
@@ -117,9 +303,9 @@ export default function App() {
       if (sprintDismissRef.current) clearTimeout(sprintDismissRef.current)
       sprintDismissRef.current = setTimeout(() => setSprintCue(false), 6000)
     }
-  }, [elapsed, isRunning])
+  }, [elapsed, isRunning]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── Controls ───────────────────────────────────────────────────────────────
+  // ── Controls ─────────────────────────────────────────────────────────────
 
   const handlePlayPause = () => {
     if (isComplete) return
@@ -136,9 +322,10 @@ export default function App() {
     if (flashRef.current)         clearInterval(flashRef.current)
     if (hrDismissRef.current)     clearTimeout(hrDismissRef.current)
     if (sprintDismissRef.current) clearTimeout(sprintDismissRef.current)
+    onReset()
   }
 
-  // ─── Render ────────────────────────────────────────────────────────────────
+  // ── Render ───────────────────────────────────────────────────────────────
 
   return (
     <div
@@ -152,12 +339,14 @@ export default function App() {
 
       {/* ── TOP: Title + elapsed ── */}
       <div className="w-full max-w-sm text-center">
-        <h1 className="text-2xl font-black text-white tracking-tight"
-            style={{ textShadow: '0 2px 8px rgba(0,0,0,0.3)' }}>
-          🚴 Fat Burn Ride
+        <h1
+          className="text-2xl font-black text-white tracking-tight"
+          style={{ textShadow: '0 2px 8px rgba(0,0,0,0.3)' }}
+        >
+          🚴 {plan.subtitle}
         </h1>
         <p className="text-sm text-white/80 mt-0.5 font-mono">
-          {formatTime(elapsed)}&thinsp;/&thinsp;60:00 elapsed
+          {formatTime(elapsed)}&thinsp;/&thinsp;{plan.totalMinutes}:00 elapsed
         </p>
       </div>
 
@@ -202,7 +391,7 @@ export default function App() {
               style={{ background: 'rgba(220,38,38,0.85)' }}
             >
               <span className="text-white font-black text-sm tracking-wide">
-                ⚡ SPRINT {sprintNumber}/5 — ALL OUT!
+                ⚡ SPRINT {sprintNumber}/{plan.sprintTotal} — ALL OUT!
               </span>
             </div>
           )}
@@ -216,7 +405,10 @@ export default function App() {
             className="rounded-2xl p-3 text-center border-2 border-white/60"
             style={{ background: 'rgba(255,255,255,0.28)', backdropFilter: 'blur(4px)' }}
           >
-            <p className="text-white font-black text-lg" style={{ textShadow: '0 1px 6px rgba(0,0,0,0.4)' }}>
+            <p
+              className="text-white font-black text-lg"
+              style={{ textShadow: '0 1px 6px rgba(0,0,0,0.4)' }}
+            >
               💓 Check Your Heart Rate!
             </p>
             <p className="text-white/80 text-sm">Target: {stage.bpmLow}–{stage.bpmHigh} BPM</p>
@@ -234,7 +426,7 @@ export default function App() {
               ⚡ SPRINT NOW!
             </p>
             <p className="text-white/90 text-sm mt-1">
-              1-minute all-out effort · Sprint {sprintNumber}/5
+              1-minute all-out effort · Sprint {sprintNumber}/{plan.sprintTotal}
             </p>
           </div>
         )}
@@ -244,7 +436,9 @@ export default function App() {
             style={{ background: 'rgba(255,255,255,0.35)' }}
           >
             <p className="text-white font-black text-2xl">🎉 Workout Complete!</p>
-            <p className="text-white/80 text-sm mt-1">60 minutes crushed. Great ride!</p>
+            <p className="text-white/80 text-sm mt-1">
+              {plan.totalMinutes} minutes crushed. Great ride!
+            </p>
           </div>
         )}
       </div>
@@ -287,7 +481,7 @@ export default function App() {
               style={{
                 flex: s.duration,
                 backgroundColor:
-                  i < stageIndex  ? 'rgba(255,255,255,0.65)' :
+                  i < stageIndex   ? 'rgba(255,255,255,0.65)' :
                   i === stageIndex ? 'white' :
                                      'rgba(255,255,255,0.22)',
                 height: i === stageIndex ? '10px' : '7px',
@@ -316,13 +510,16 @@ export default function App() {
         <div className="flex justify-between text-xs text-white/70 mt-1 font-mono">
           <span>0:00</span>
           <span className="font-bold text-white/90">{Math.round(progress * 100)}%</span>
-          <span>60:00</span>
+          <span>{plan.totalMinutes}:00</span>
         </div>
       </div>
 
       {/* ── STAGE LEGEND ── */}
       <div className="w-full max-w-sm">
-        <div className="grid grid-cols-5 gap-1 text-center">
+        <div
+          className="grid gap-1 text-center"
+          style={{ gridTemplateColumns: `repeat(${STAGES.length}, 1fr)` }}
+        >
           {STAGES.map((s, i) => (
             <div
               key={i}
@@ -352,7 +549,7 @@ export default function App() {
         </div>
       </div>
 
-      {/* ── RESET ── */}
+      {/* ── RESET (returns to plan selector) ── */}
       <button
         onClick={handleReset}
         className="mb-1 px-8 py-3 rounded-full border-2 border-white/30 text-white font-bold text-base active:scale-95 transition-all duration-150 cursor-pointer"
@@ -363,4 +560,16 @@ export default function App() {
 
     </div>
   )
+}
+
+// ─── App ──────────────────────────────────────────────────────────────────────
+
+export default function App() {
+  const [selectedPlan, setSelectedPlan] = useState<Plan | null>(null)
+
+  if (!selectedPlan) {
+    return <PlanSelector onSelect={setSelectedPlan} />
+  }
+
+  return <WorkoutScreen plan={selectedPlan} onReset={() => setSelectedPlan(null)} />
 }
